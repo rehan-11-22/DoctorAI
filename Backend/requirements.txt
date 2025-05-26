@@ -78,5 +78,3 @@ tzdata==2025.2
 urllib3==2.4.0
 uvicorn==0.34.0
 orjson==3.10.3
-# Vercel Specific
-vercel-python-wsgi==0.2.1  # Required for Vercel deployment
