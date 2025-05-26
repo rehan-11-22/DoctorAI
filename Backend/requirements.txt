@@ -1,0 +1,25 @@
+# Core FastAPI & ASGI
+fastapi==0.115.6
+uvicorn==0.34.0
+python-multipart==0.0.20  # For file uploads
+starlette==0.41.3
+
+# OpenAI & AI
+openai==1.58.1
+google-generativeai==0.3.2  # If you're using Gemini
+
+# Image Processing
+pillow==11.0.0  # For image handling
+PyPDF2==3.0.1   # If processing PDFs
+
+# Environment & Config
+python-dotenv==1.0.1
+pydantic==2.10.4  # Data validation
+
+# Optional (if needed)
+numpy==2.2.1      # For numerical ops
+pandas==2.2.3     # If processing tabular data
+
+# HTTP/API Clients
+httpx==0.28.1     # Async HTTP requests
+requests==2.32.3  # Sync HTTP (if needed)
