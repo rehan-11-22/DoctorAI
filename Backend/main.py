@@ -5,20 +5,16 @@ import openai
 import json
 from utils import encode_image, process_image_analysis
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from dotenv import load_dotenv
 from openai import OpenAI
-from fastapi.staticfiles import StaticFiles
 from pymongo import MongoClient
 from datetime import datetime
 import uuid
 import os
 from bson.objectid import ObjectId
-
+import tempfile
 
 # ---------------- SETUP OPENAI ----------------
-from dotenv import load_dotenv
-import os
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
@@ -27,21 +23,18 @@ if not openai.api_key:
 # ---------------- FASTAPI ----------------
 app = FastAPI(title="Doctor AI API")
 
-
-# Add CORS middleware here (before your endpoints)
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins (for development)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 class AnalyzeAndChatRequest(BaseModel):
     user_query: Optional[str] = None
     chat_history: Optional[List[dict]] = []
-
-
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -53,32 +46,15 @@ db = client_mongo["doctor_ai"]
 medical_records = db["medical_records"]
 chats_collection = db["chat_conversations"]
 
-
-# Ensure uploads directory exists
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# Mount static files
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
-# ------ New API Endpoints ------
+# ---------------- API Endpoints ----------------
 @app.post("/analyze_and_store")
 async def analyze_and_store(
-    file: UploadFile = File(..., description="Medical image to analyze"),
-    patient_id: str = Form(..., description="Patient identifier"),
-    questions: str = Form(..., description="JSON string of 5 questions/answers"),
-        diagnosis: str = Form(None),  # Add this
-    danger_level: str = Form(None)  # Add this
+    file: UploadFile = File(...),
+    patient_id: str = Form(...),
+    questions: str = Form(...),
+    diagnosis: str = Form(None),
+    danger_level: str = Form(None)
 ):
-    """
-    Analyze medical image, store in uploads folder, and save record to MongoDB
-    Expected questions format:
-    [
-        {"question": "Question 1", "answer": "Answer 1"},
-        {"question": "Question 2", "answer": "Answer 2"},
-        ...
-    ]
-    """
     try:
         # Validate and parse questions
         try:
@@ -88,36 +64,26 @@ async def analyze_and_store(
         except (json.JSONDecodeError, ValueError) as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        # Read and process image
+        # Process image in memory
         image_data = await file.read()
         base64_image = encode_image(image_data)
         diagnosis = process_image_analysis(base64_image)
 
-        # Save image to uploads folder
-        file_extension = os.path.splitext(file.filename)[1]
-        unique_filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = os.path.join(UPLOAD_DIR, unique_filename)
-        
-        with open(file_path, "wb") as buffer:
-            buffer.write(image_data)
-
-        # Create MongoDB record
+        # Store record with base64 image data
         record = {
             "patient_id": patient_id,
-            "image_url": f"/uploads/{unique_filename}",
+            "image_data": base64_image,
             "diagnosis": diagnosis,
             "questions": questions_list,
             "created_at": datetime.now(),
             "updated_at": datetime.now()
         }
 
-        # Insert record
         result = medical_records.insert_one(record)
         
         return {
             "status": "success",
             "record_id": str(result.inserted_id),
-            "image_url": record["image_url"],
             "diagnosis": diagnosis
         }
 
@@ -130,8 +96,6 @@ async def get_records(patient_id: str):
     records = list(medical_records.find({"patient_id": patient_id}, {"_id": 0}))
     return {"status": "success", "records": records}
 
-# -------------- save chat and get chat -------
-
 class ChatMessage(BaseModel):
     userId: str
     question: str
@@ -141,20 +105,9 @@ class ChatMessage(BaseModel):
 
 @app.post("/chats")
 async def save_chat(chat: ChatMessage):
-    """
-    Save a chat conversation with question and answer
-    - userId: ID of the user who had the conversation
-    - question: The user's question
-    - answer: The AI's response
-    - isDeleted: Boolean flag for soft deletion (default: False)
-    """
     try:
-        # Convert the Pydantic model to a dictionary
         chat_dict = chat.dict()
-        
-        # Insert into MongoDB
         result = chats_collection.insert_one(chat_dict)
-        
         return {
             "status": "success",
             "message": "Chat saved successfully",
@@ -165,72 +118,45 @@ async def save_chat(chat: ChatMessage):
 
 @app.get("/chats/{user_id}")
 async def get_user_chats(user_id: str, include_deleted: bool = False):
-    """
-    Get all chats for a specific user
-    - user_id: The user ID to fetch chats for
-    - include_deleted: Whether to include deleted chats (default: False)
-    """
     try:
-        # Build query based on include_deleted parameter
         query = {"userId": user_id}
         if not include_deleted:
             query["isDeleted"] = False
             
-        # Retrieve chats from MongoDB
         chats = list(chats_collection.find(query, {"_id": 0}))
-        
-        return {
-            "status": "success",
-            "chats": chats
-        }
+        return {"status": "success", "chats": chats}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/chats/{chat_id}/delete")
 async def soft_delete_chat(chat_id: str):
-    """
-    Soft delete a chat by setting isDeleted to True
-    - chat_id: The MongoDB ID of the chat to mark as deleted
-    """
     try:
-        # Update the chat document
         result = chats_collection.update_one(
             {"_id": ObjectId(chat_id)},
             {"$set": {"isDeleted": True}}
         )
-        
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Chat not found")
-            
-        return {
-            "status": "success",
-            "message": "Chat marked as deleted"
-        }
+        return {"status": "success", "message": "Chat marked as deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# ------ API Endpoints ------
 @app.post("/analyze_and_chat")
 async def analyze_and_chat(
-    file: UploadFile = File(None, media_type=["image/jpeg", "image/png" , "image/jpg"]),# Optional file upload
-    user_query: str = Form(None),   # Optional text query
-    chat_history: str = Form("[]")  # JSON string
+    file: UploadFile = File(None),
+    user_query: str = Form(None),
+    chat_history: str = Form("[]")
 ):
     try:
-        # Parse inputs
         history = json.loads(chat_history) if chat_history else []
-        
-        # Process image if provided
         diagnosis = None
+        
         if file and file.content_type.startswith('image/'):
             image_data = await file.read()
             base64_image = encode_image(image_data)
             diagnosis = process_image_analysis(base64_image)
             history.append({"role": "assistant", "content": diagnosis})
         
-        # Process text query if provided
-        reply = None
         if user_query:
             history.append({"role": "user", "content": user_query})
             response = client.chat.completions.create(
@@ -244,11 +170,15 @@ async def analyze_and_chat(
         
         return {
             "diagnosis": diagnosis,
-            "reply": reply,
+            "reply": reply or None,
             "chat_history": history
         }
-    
     except json.JSONDecodeError:
         raise HTTPException(400, "Invalid chat_history format")
     except Exception as e:
         raise HTTPException(500, str(e))
+
+# Vercel handler
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
