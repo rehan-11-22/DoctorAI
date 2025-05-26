@@ -58,3 +58,4 @@ generated/
 # Ignore any secrets or sensitive files
 secrets.json
 config.json
+.vercel
