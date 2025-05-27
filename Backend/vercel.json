@@ -1,15 +1,14 @@
 {
   "version": 2,
-  "functions": {
-    "main.py": {
-      "runtime": "python@3.12.0",
-      "maxDuration": 30
-    }
-  },
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "main.py"
+      "dest": "/main.py"
     }
-  ]
+  ],
+  "functions": {
+    "main.py": {
+      "maxDuration": 30
+    }
+  }
 }
