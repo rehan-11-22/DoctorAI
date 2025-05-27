@@ -42,7 +42,6 @@ class AnalyzeAndChatRequest(BaseModel):
     chat_history: Optional[List[dict]] = []
 
 
-
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -54,12 +53,12 @@ medical_records = db["medical_records"]
 chats_collection = db["chat_conversations"]
 
 
-# Ensure uploads directory exists
-UPLOAD_DIR = "uploads"
+# FIXED: Use /tmp directory for Vercel (writable in serverless environment)
+UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Mount static files
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# REMOVED: Static file mounting (won't work with /tmp in serverless)
+# app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # ------ New API Endpoints ------
 @app.post("/analyze_and_store")
@@ -67,17 +66,13 @@ async def analyze_and_store(
     file: UploadFile = File(..., description="Medical image to analyze"),
     patient_id: str = Form(..., description="Patient identifier"),
     questions: str = Form(..., description="JSON string of 5 questions/answers"),
-        diagnosis: str = Form(None),  # Add this
+    diagnosis: str = Form(None),  # Add this
     danger_level: str = Form(None)  # Add this
 ):
     """
-    Analyze medical image, store in uploads folder, and save record to MongoDB
-    Expected questions format:
-    [
-        {"question": "Question 1", "answer": "Answer 1"},
-        {"question": "Question 2", "answer": "Answer 2"},
-        ...
-    ]
+    Analyze medical image and save record to MongoDB
+    NOTE: Files are temporarily stored in /tmp but not accessible via URL
+    For production, use cloud storage (AWS S3, Cloudinary, etc.)
     """
     try:
         # Validate and parse questions
@@ -91,9 +86,9 @@ async def analyze_and_store(
         # Read and process image
         image_data = await file.read()
         base64_image = encode_image(image_data)
-        diagnosis = process_image_analysis(base64_image)
+        diagnosis_result = process_image_analysis(base64_image)
 
-        # Save image to uploads folder
+        # Save image to /tmp (temporary storage)
         file_extension = os.path.splitext(file.filename)[1]
         unique_filename = f"{uuid.uuid4()}{file_extension}"
         file_path = os.path.join(UPLOAD_DIR, unique_filename)
@@ -102,10 +97,12 @@ async def analyze_and_store(
             buffer.write(image_data)
 
         # Create MongoDB record
+        # NOTE: image_url won't be accessible in serverless environment
         record = {
             "patient_id": patient_id,
-            "image_url": f"/uploads/{unique_filename}",
-            "diagnosis": diagnosis,
+            "image_filename": unique_filename,  # Store filename instead of URL
+            "image_path": file_path,  # Temporary path
+            "diagnosis": diagnosis_result,
             "questions": questions_list,
             "created_at": datetime.now(),
             "updated_at": datetime.now()
@@ -117,8 +114,9 @@ async def analyze_and_store(
         return {
             "status": "success",
             "record_id": str(result.inserted_id),
-            "image_url": record["image_url"],
-            "diagnosis": diagnosis
+            "image_filename": unique_filename,
+            "diagnosis": diagnosis_result,
+            "note": "Image stored temporarily. For production, use cloud storage."
         }
 
     except Exception as e:
