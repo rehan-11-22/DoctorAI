@@ -14,7 +14,9 @@ from datetime import datetime
 import uuid
 import os
 from bson.objectid import ObjectId
-
+import cloudinary
+import cloudinary.uploader
+from cloudinary.utils import cloudinary_url
 
 # ---------------- SETUP OPENAI ----------------
 from dotenv import load_dotenv
@@ -23,6 +25,13 @@ load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
     raise ValueError("OpenAI API key not found. Please set it in .env file.")
+
+# ---------------- Cloudinary Setup ----------------
+cloudinary.config(
+    cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
+    api_key=os.getenv('CLOUDINARY_API_KEY'),
+    api_secret=os.getenv('CLOUDINARY_API_SECRET')
+)
 
 # ---------------- FASTAPI ----------------
 app = FastAPI(title="Doctor AI API")
@@ -53,12 +62,7 @@ medical_records = db["medical_records"]
 chats_collection = db["chat_conversations"]
 
 
-# FIXED: Use /tmp directory for Vercel (writable in serverless environment)
-UPLOAD_DIR = "/tmp/uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# REMOVED: Static file mounting (won't work with /tmp in serverless)
-# app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # ------ New API Endpoints ------
 @app.post("/analyze_and_store")
@@ -66,13 +70,11 @@ async def analyze_and_store(
     file: UploadFile = File(..., description="Medical image to analyze"),
     patient_id: str = Form(..., description="Patient identifier"),
     questions: str = Form(..., description="JSON string of 5 questions/answers"),
-    diagnosis: str = Form(None),  # Add this
-    danger_level: str = Form(None)  # Add this
+    diagnosis: str = Form(None),
+    danger_level: str = Form(None)
 ):
     """
-    Analyze medical image and save record to MongoDB
-    NOTE: Files are temporarily stored in /tmp but not accessible via URL
-    For production, use cloud storage (AWS S3, Cloudinary, etc.)
+    Analyze medical image and save record to MongoDB with Cloudinary URL
     """
     try:
         # Validate and parse questions
@@ -88,20 +90,23 @@ async def analyze_and_store(
         base64_image = encode_image(image_data)
         diagnosis_result = process_image_analysis(base64_image)
 
-        # Save image to /tmp (temporary storage)
-        file_extension = os.path.splitext(file.filename)[1]
-        unique_filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = os.path.join(UPLOAD_DIR, unique_filename)
+        # Upload to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            image_data,
+            folder="doctor_ai/",
+            public_id=f"{uuid.uuid4()}",
+            overwrite=True,
+            resource_type="auto"
+        )
         
-        with open(file_path, "wb") as buffer:
-            buffer.write(image_data)
+        # Get the secure URL
+        image_url = upload_result.get('secure_url')
 
         # Create MongoDB record
-        # NOTE: image_url won't be accessible in serverless environment
         record = {
             "patient_id": patient_id,
-            "image_filename": unique_filename,  # Store filename instead of URL
-            "image_path": file_path,  # Temporary path
+            "image_url": image_url,  # Now storing the Cloudinary URL
+            "cloudinary_public_id": upload_result.get('public_id'),  # Store for future management
             "diagnosis": diagnosis_result,
             "questions": questions_list,
             "created_at": datetime.now(),
@@ -114,9 +119,8 @@ async def analyze_and_store(
         return {
             "status": "success",
             "record_id": str(result.inserted_id),
-            "image_filename": unique_filename,
-            "diagnosis": diagnosis_result,
-            "note": "Image stored temporarily. For production, use cloud storage."
+            "image_url": image_url,
+            "diagnosis": diagnosis_result
         }
 
     except Exception as e:
