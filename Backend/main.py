@@ -69,21 +69,22 @@ chats_collection = db["chat_conversations"]
 async def analyze_and_store(
     file: UploadFile = File(..., description="Medical image to analyze"),
     patient_id: str = Form(..., description="Patient identifier"),
-    questions: str = Form(..., description="JSON string of 5 questions/answers"),
+    questions: str = Form(default="[]", description="JSON string of questions/answers"),
     diagnosis: str = Form(None),
     danger_level: str = Form(None)
 ):
     """
     Analyze medical image and save record to MongoDB with Cloudinary URL
+    Questions are optional (can be empty array)
     """
     try:
-        # Validate and parse questions
+        # Parse questions (empty array is allowed)
         try:
             questions_list = json.loads(questions)
-            if len(questions_list) != 5:
-                raise ValueError("Exactly 5 questions required")
+            if not isinstance(questions_list, list):
+                raise ValueError("Questions must be a JSON array")
         except (json.JSONDecodeError, ValueError) as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=f"Invalid questions format: {str(e)}")
 
         # Read and process image
         image_data = await file.read()
@@ -105,9 +106,10 @@ async def analyze_and_store(
         # Create MongoDB record
         record = {
             "patient_id": patient_id,
-            "image_url": image_url,  # Now storing the Cloudinary URL
-            "cloudinary_public_id": upload_result.get('public_id'),  # Store for future management
+            "image_url": image_url,
+            "cloudinary_public_id": upload_result.get('public_id'),
             "diagnosis": diagnosis_result,
+            "danger_level": int(danger_level) if danger_level else 0,  # Add danger_level
             "questions": questions_list,
             "created_at": datetime.now(),
             "updated_at": datetime.now()
@@ -125,7 +127,7 @@ async def analyze_and_store(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.get("/records/{patient_id}")
 async def get_records(patient_id: str):
     """Get all records for a specific patient"""
